@@ -104,7 +104,6 @@ def main():
     video = cv.VideoWriter()
     for i in range(10):
         frame = gen.get_next_frame()
-        # print(frame)
         cv.imshow('ball video', frame)
         if(cv.waitKey(1) == ord('q')):
             break
