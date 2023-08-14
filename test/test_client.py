@@ -2,3 +2,9 @@
 # email: brandenkretsch@gmail.com
 
 import pytest
+import os
+import sys
+cwd = os.getcwd()
+print(cwd)
+sys.path.append(cwd)
+import client.client as client
