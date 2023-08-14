@@ -7,6 +7,8 @@ import numpy as np
 
 import asyncio
 import aiortc
+from aiortc.contrib.signaling import TcpSocketSignaling
+import av
 import time
 
 import multiprocessing as multi
@@ -17,7 +19,7 @@ from collections import deque
 # code for generating video of ball bouncing
 ########################################################################################################################
 
-class frame_generator():
+class FrameGenerator():
     '''
         TODO: write doc string
         Class used to generate video of a ball bouncing across the screen
@@ -75,8 +77,9 @@ def generate_video(que: multi.Queue, velocity: int, radius: int, resolution: Tup
     '''
         TODO: write doc string
         This function is meant to be run in a seperate process using multiprocessing
+        might not be usable
     '''
-    frame_gen = frame_generator(velocity, radius, resolution)
+    frame_gen = FrameGenerator(velocity, radius, resolution)
     while True:
         x_pos, y_pos = frame_gen.get_current_location()
         frame = frame_gen.get_frame()
@@ -84,6 +87,41 @@ def generate_video(que: multi.Queue, velocity: int, radius: int, resolution: Tup
         while que.qsize() >= frame_buff_size:
             time.sleep(buffer_sleep)
         que.put((frame, x_pos, y_pos))
+
+class BallVideoStreamTrack(aiortc.VideoStreamTrack):
+    '''
+        New stream track that will create a video of a ball bouncing across the screen
+    '''
+    def __init__(self, velocity: int, radius: int, resolution: Tuple[int, int]):
+        '''
+            TODO: write doc string
+        '''
+        super().__init__()
+        self.velocity = velocity
+        self.radius = radius
+        self.resolution = resolution
+        self.frame_gen = FrameGenerator(velocity, radius, resolution)
+        self.ball_locations = deque()
+
+    async def recv(self):
+        '''
+            TODO: write doc string
+        '''
+        pts, time_base = await self.next_timestamp()
+        x_pos, y_pos = self.frame_gen.get_current_location()
+        frame = self.frame_gen.get_frame()
+        self.frame_gen.increment_position()
+        frame = av.VideoFrame.from_ndarray(frame, format='bgr24')
+        frame.pts = pts
+        frame.time_base = time_base
+        self.ball_locations.append((x_pos, y_pos, pts))
+        return frame
+
+########################################################################################################################
+# code for rtc server
+# Note, the server will be the offerer
+# for callbacks, register using the peer connection object with @pc.on("attribute")
+########################################################################################################################
 
 class RTC_Server():
     '''
@@ -95,20 +133,62 @@ class RTC_Server():
         '''
         pass
 
-def main():
+async def run_rtc_server(
+        pc: aiortc.RTCPeerConnection, 
+        signal: TcpSocketSignaling, 
+        velocity: int, 
+        radius: int, 
+        resolution: Tuple[int, int]):
+    '''
+        TODO: write doc string
+        references https://github.com/aiortc/aiortc/blob/main/examples/videostream-cli/cli.py which is a video stream example
+    '''
+    stream_track = BallVideoStreamTrack(velocity, radius, resolution)
+
+    # These decorators define callbacks for when an event happens
+    # ex: on datachannel event, we will print that a data channel connected
+    @pc.on("datachannel")
+    def on_datachannel(channel):
+        '''
+            TODO: write doc string
+        '''
+        print(f'channel {channel.label} connected')
+        
+        @channel.on("message")
+        def on_message(message):
+            '''
+                TODO: create docstring and put server side printing here
+            '''
+            print(f'''
+                channel {channel.label} sent message:
+                {message}
+            ''')
+
+    await signal.connect() # this doesn't do anything, but examples use it so here it is. function is implemented as just a pass in aiortc.
+    pc.addTrack(stream_track)
+    await pc.setLocalDescription(await pc.createOffer())
+    print("sending offer")
+    await signal.send(pc.localDescription)
+
+    
+
+async def main():
     '''
         TODO: write doc string
         Entry point of script to start server and connect to clients
     '''
-    gen = frame_generator(fps=30, velocity=15)
-    video = cv.VideoWriter()
-    for i in range(10):
-        frame = gen.get_next_frame()
-        cv.imshow('ball video', frame)
-        if(cv.waitKey(1) == ord('q')):
-            break
-    print(gen.ball_location)
-    cv.destroyAllWindows()
+    velocity = 5
+    radius = 40
+    resolution = (1920, 1080)
+    host = 'localhost'
+    port = '50001'
+    # TODO: move variables above to command line interface or environment variables with defaults to fall back on
+
+    signal = TcpSocketSignaling(host, port)
+    pc = aiortc.RTCPeerConnection()
+    await run_rtc_server(pc, signal, velocity, radius, resolution)
 
 if __name__ == "__main__":
-    main()
+    loop = asyncio.get_event_loop()
+    loop.run_until_complete(main())
+    # asyncio.run(main())

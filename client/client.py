@@ -25,3 +25,13 @@ def detect_center(frame: np.ndarray):
     num_rows = gray_frame.shape[0]
     circles = cv.HoughCircles(gray_frame, cv.HOUGH_GRADIENT, 3, 10)
     return circles
+
+########################################################################################################################
+# code for rtc client
+########################################################################################################################
+
+async def main():
+    pass
+
+if __name__ == "__main__":
+    asyncio.run(main())
