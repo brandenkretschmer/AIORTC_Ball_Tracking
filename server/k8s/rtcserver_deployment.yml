@@ -1,0 +1,30 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rtcserver-deployment
+  labels:
+    app: rtcserver
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: rtcserver
+  template:
+    metadata:
+      labels:
+        app: rtcserver
+    spec:
+      containers:
+      - name: server
+        image: rtcserver:1
+        env:
+        - name: HOST_TO_LISTEN
+          value: "0.0.0.0"
+        - name: PORT_TO_LISTEN
+        # port that server is listening on
+          value: "50051"
+        # add env variables for res, ball radius, etc here to control it from yaml file
+        ports:
+        # port that server is listening on
+        - containerPort: 50051
+          name: rtc-server-port

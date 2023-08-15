@@ -128,7 +128,14 @@ class RTCClient():
 
             If not Returns False
         '''
-        obj = await self.signal.receive()
+        obj = None
+        while True:
+            try:
+                obj = await self.signal.receive()
+                break
+            except Exception as e:
+                print(e)
+
         if isinstance(obj, aiortc.RTCSessionDescription):
             await self.pc.setRemoteDescription(obj)
             if obj.type == "offer":
@@ -380,6 +387,8 @@ async def main():
         host = os.getenv('HOST_TO_CONNECT')
     if port is None:
         port = os.getenv('PORT_TO_CONNECT')
+    # TODO: add environment variable lookups for script arguments like dp so that they can be changed in yaml deploytment file
+    
     # if host or port still weren't specified, set default to local host and port 50051
     if host is None:
         host = 'localhost'

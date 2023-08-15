@@ -10,12 +10,14 @@ RUN apt update && apt install ca-certificates -y
 RUN echo "deb https://ppa.launchpadcontent.net/deadsnakes/ppa/ubuntu jammy main" >> /etc/apt/sources.list && \
     echo "deb-src https://ppa.launchpadcontent.net/deadsnakes/ppa/ubuntu jammy main" >> /etc/apt/sources.list && \
     apt-key adv --keyserver keyserver.ubuntu.com --recv-keys F23C5A6CF475977595C89F51BA6932366A755776
-# RUN apt-key adv --keyserver hkp://keyserver.ubuntu.com:80 --recv-keys F23C5A6CF475977595C89F51BA6932366A755776
 RUN apt update && DEBIAN_FRONTEND=noninteractive apt install python3.11 -y
 
 # make project folder
 RUN mkdir /project
 WORKDIR /project
+
+# install DNSUtils for use in kubernetes DNS lookup to find services
+RUN apt update && apt install dnsutils -y
 
 # install packages to python3.11
 RUN apt update && apt install python3-pip -y
@@ -28,5 +30,5 @@ RUN python3.11 -m pip install --upgrade pip && python3.11 -m pip install -r requ
 COPY server/server.py /project
 
 # run app
-# ENTRYPOINT ["python3.11", "server.py"]
-CMD /bin/bash
+# ENTRYPOINT python3.11 server.py # for kubernetes, define port and listening IP in YAML Deployment file
+CMD ["/bin/bash", "-c", "exec /bin/bash -c 'trap : TERM INT; sleep 9999999999d & wait'"]

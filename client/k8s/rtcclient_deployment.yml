@@ -1,0 +1,22 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rtcclient-deployment
+  labels:
+    app: rtcclient
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: rtcclient
+  template:
+    metadata:
+      labels:
+        app: rtcclient
+    spec:
+      containers:
+      - name: client
+        image: rtcclient:1
+        env:
+        - name: SERVER_SERVICE_NAME
+          value: "SERVER_SIGNAL_SERVICE"

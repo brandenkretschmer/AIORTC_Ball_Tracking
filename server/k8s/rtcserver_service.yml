@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: server-signal-service
+spec:
+  selector:
+    app: rtcserver
+  ports:
+  - name: rtc-signal-port
+    protocol: TCP
+    port: 50051
+    targetPort: rtc-server-port

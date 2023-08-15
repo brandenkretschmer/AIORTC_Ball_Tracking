@@ -74,21 +74,6 @@ class FrameGenerator():
             self.y_pos += 2 * self.velocity * self.y_sense
         
 
-def generate_video(que: multi.Queue, velocity: int, radius: int, resolution: Tuple[int, int], frame_buff_size: int, buffer_sleep: int):
-    '''
-        TODO: write doc string
-        This function is meant to be run in a seperate process using multiprocessing
-        might not be usable
-    '''
-    frame_gen = FrameGenerator(velocity, radius, resolution)
-    while True:
-        x_pos, y_pos = frame_gen.get_current_location()
-        frame = frame_gen.get_frame()
-        frame_gen.increment_position()
-        while que.qsize() >= frame_buff_size:
-            time.sleep(buffer_sleep)
-        que.put((frame, x_pos, y_pos))
-
 class BallVideoStreamTrack(aiortc.VideoStreamTrack):
     '''
         New stream track that will create a video of a ball bouncing across the screen
@@ -102,7 +87,6 @@ class BallVideoStreamTrack(aiortc.VideoStreamTrack):
         self.radius = radius
         self.resolution = resolution
         self.frame_gen = FrameGenerator(velocity, radius, resolution)
-        self.ball_locations = deque()
         self.ball_location_dict = ball_location_dict # key will be frame timestamp, value will be (x,y) tuple
         self.count = 0
 
@@ -110,7 +94,6 @@ class BallVideoStreamTrack(aiortc.VideoStreamTrack):
         '''
             TODO: write doc string
         '''
-        # print("generating frame")
         pts, time_base = await self.next_timestamp()
         x_pos, y_pos = self.frame_gen.get_current_location()
         frame = self.frame_gen.get_frame()
@@ -119,8 +102,6 @@ class BallVideoStreamTrack(aiortc.VideoStreamTrack):
         frame.pts = pts
         frame.time_base = time_base
         self.ball_location_dict[pts] = (x_pos,y_pos)
-        # self.ball_locations.append((x_pos, y_pos, pts))
-        # print(f"{self.count} generating frame")
         self.count += 1
         return frame
     
@@ -215,7 +196,6 @@ class RTCServer():
             This should be implemented in a subclass
         '''
         raise NotImplementedError
-
         
 
 class BallVideoRTCServer(RTCServer):
@@ -266,18 +246,9 @@ class BallVideoRTCServer(RTCServer):
                 This function parses the message and then attempts to calculate
                 RMS Error and draw the received ball coordinates from the client.
             '''
-            # print(f'''
-            #         channel {self.channel.label} message:
-            #         {message}
-            #     ''')
             values = message.split('\t') # for returned estimated coordinates, server expects a string with format: "{x_pos}\t{y_pos}\t{timestamp}"
             try:
                 ball_location_dict = self.stream_track.ball_location_dict
-                # print(f'''
-
-                #         actual ball location is {ball_location_dict[int(values[2])]}
-                # ''')
-                # do something with the ball location value and then delete it from the dictionary
                 radius = self.stream_track.radius
                 resolution = self.stream_track.resolution
                 actual_loc = ball_location_dict[int(values[2])]
@@ -321,8 +292,15 @@ class BallVideoRTCServer(RTCServer):
         '''
             Method to shutdown server. TODO: implement
         '''
-        pass
-        
+        await self.signal.close()
+        try:
+            await self.channel.close()
+        except TypeError:
+            pass
+        try:
+            await self.pc.close()
+        except TypeError:
+            pass
 
 async def main():
     '''
@@ -419,9 +397,15 @@ async def main():
     if port is None:
         port = '50051'
     # TODO: move variables above to command line interface or environment variables with defaults to fall back on  
-    stream_track = BallVideoStreamTrack(velocity, radius, resolution)
-    server = BallVideoRTCServer(host, port, velocity, radius, resolution, display=display)
-    await server.run()
+
+    # Server can only have one connection at a time, but the while loop spins up a new server if a disconnection happens
+    while True:
+        server = BallVideoRTCServer(host, port, velocity, radius, resolution, display=display)
+        await server.run()
+        await server.shutdown()
 
 if __name__ == '__main__':
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        pass
