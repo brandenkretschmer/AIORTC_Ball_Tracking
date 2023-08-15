@@ -7,13 +7,14 @@ import numpy as np
 
 import asyncio
 import aiortc
-from aiortc.contrib.signaling import TcpSocketSignaling
+from aiortc.contrib.signaling import TcpSocketSignaling, BYE
 import av
 import time
+import os
 
 import multiprocessing as multi
-import os
 from collections import deque
+import argparse
 
 ########################################################################################################################
 # code for generating video of ball bouncing
@@ -92,7 +93,7 @@ class BallVideoStreamTrack(aiortc.VideoStreamTrack):
     '''
         New stream track that will create a video of a ball bouncing across the screen
     '''
-    def __init__(self, velocity: int, radius: int, resolution: Tuple[int, int]):
+    def __init__(self, velocity: int, radius: int, resolution: Tuple[int, int], ball_location_dict: dict = {}):
         '''
             TODO: write doc string
         '''
@@ -102,11 +103,14 @@ class BallVideoStreamTrack(aiortc.VideoStreamTrack):
         self.resolution = resolution
         self.frame_gen = FrameGenerator(velocity, radius, resolution)
         self.ball_locations = deque()
+        self.ball_location_dict = ball_location_dict # key will be frame timestamp, value will be (x,y) tuple
+        self.count = 0
 
     async def recv(self):
         '''
             TODO: write doc string
         '''
+        # print("generating frame")
         pts, time_base = await self.next_timestamp()
         x_pos, y_pos = self.frame_gen.get_current_location()
         frame = self.frame_gen.get_frame()
@@ -114,8 +118,12 @@ class BallVideoStreamTrack(aiortc.VideoStreamTrack):
         frame = av.VideoFrame.from_ndarray(frame, format='bgr24')
         frame.pts = pts
         frame.time_base = time_base
-        self.ball_locations.append((x_pos, y_pos, pts))
+        self.ball_location_dict[pts] = (x_pos,y_pos)
+        # self.ball_locations.append((x_pos, y_pos, pts))
+        # print(f"{self.count} generating frame")
+        self.count += 1
         return frame
+    
 
 ########################################################################################################################
 # code for rtc server
@@ -123,72 +131,296 @@ class BallVideoStreamTrack(aiortc.VideoStreamTrack):
 # for callbacks, register using the peer connection object with @pc.on("attribute")
 ########################################################################################################################
 
-class RTC_Server():
+class RTCServer():
     '''
-        TODO: write doc string
+        Base class of an RTCServer that offers a datachannel and a mediastream to a client.
     '''
-    def __init__(self):
+    def __init__(self, host: str, port: str, stream_track: aiortc.MediaStreamTrack):
         '''
-            TODO: write doc string
-        '''
-        pass
+            Initialize host and port that the server will listen on. Also create RTCPeer connection
+            and adds a track and a Datachannel.
 
-async def run_rtc_server(
-        pc: aiortc.RTCPeerConnection, 
-        signal: TcpSocketSignaling, 
-        velocity: int, 
-        radius: int, 
-        resolution: Tuple[int, int]):
-    '''
-        TODO: write doc string
-        references https://github.com/aiortc/aiortc/blob/main/examples/videostream-cli/cli.py which is a video stream example
-    '''
-    stream_track = BallVideoStreamTrack(velocity, radius, resolution)
+            args:
+                host: host IP address to listen on ex. Host IP, 127.0.0.1 (localhost), or 0.0.0.0 (listen on all addresses)
+                port: TCP port to listen to
+                stream_track: content that will be served when connected to
 
-    # These decorators define callbacks for when an event happens
-    # ex: on datachannel event, we will print that a data channel connected
-    @pc.on("datachannel")
-    def on_datachannel(channel):
+            usage order:
+                1) create instance of the class
+                2) register callback functions
+                3) prepare the offer
+                4) send the offer
+                5) consume signals
         '''
-            TODO: write doc string
+        # initialize what the RTC Server will send and initialize a data channel
+        self.host = host
+        self.port = port
+        self.signal = TcpSocketSignaling(self.host, self.port)
+        self.pc = aiortc.RTCPeerConnection()
+        self.channel = self.pc.createDataChannel("RTCchannel")
+        self.stream_track = stream_track
+        self.pc.addTrack(self.stream_track)
+
+    async def prepare_tcp_rtc_offer(self):
         '''
-        print(f'channel {channel.label} connected')
+            creates SDP offer to send to client over tcp
+        '''
+        offer = await self.pc.createOffer()
+        await self.pc.setLocalDescription(await self.pc.createOffer())
+
+    async def send_offer(self):
+        '''
+            sends offer to a client that connects with the server
+        '''
+        await self.signal.send(self.pc.localDescription)
         
+    async def consume_signal(self) -> bool:
+        '''
+            waits for a signal response through a tcp connection.
+
+            If the data recieved through the signal is an ICE Candidate or and SDP offer/answer,
+            handle that case and return True
+
+            If not Returns False
+        '''
+        obj = await self.signal.receive()
+        if isinstance(obj, aiortc.RTCSessionDescription):
+            await self.pc.setRemoteDescription(obj)
+            return True
+        elif isinstance(obj, aiortc.RTCIceCandidate):
+            await self.pc.addIceCandidate(obj)
+            return True
+        if obj is BYE:
+            print("goodbye")
+        return False
+
+
+    async def register_on_callbacks(self):
+        '''
+            Register callbacks when an RTC event happens.
+            This should be implemented in a subclass
+        '''
+        raise NotImplementedError
+    
+    async def run(self):
+        '''
+            Method to run server.
+            This should be implemented in a subclass
+        '''
+        raise NotImplementedError
+    
+    async def shutdown(self):
+        '''
+            Method to shut down server
+            This should be implemented in a subclass
+        '''
+        raise NotImplementedError
+
+        
+
+class BallVideoRTCServer(RTCServer):
+    '''
+        Class for an RTCServer that serves a video of a ball bouncing across the screen. If the client sends back
+        coordinates, the server will calculate the error in the coordinates and attempt to draw the error using
+        cv.imshow().
+    '''
+    def __init__(self, host: str, port: str, velocity: int, radius: int, resolution: Tuple[int, int], display: bool = False):
+        self.ball_position = {}
+        st = BallVideoStreamTrack(velocity, radius, resolution, self.ball_position)
+        super().__init__(host, port, st)
+        self.display=display
+
+    def calc_rms_error(self, actual: Tuple[int, int], estimated: Tuple[int, int]):
+        '''
+            Calculates Root Mean Squared Error for an actual point and an estimated point from the client
+        '''
+        diff = np.array(estimated) - np.array(actual)
+        return float(np.sqrt(np.mean(np.square(diff))))
+
+    def show_error_frame(self, actual: Tuple[int, int], estimated: Tuple[int, int]):
+        '''
+            Draws original ball frame in green with client's estimate on top with
+            a red center and outline.
+        '''
+        if self.display:
+            resolution = self.stream_track.resolution
+            radius = self.stream_track.radius
+            frame = np.zeros((resolution[1], resolution[0], 3), dtype='uint8')
+            cv.circle(frame, actual, radius=radius, color=(0,255,0), thickness=-1)
+            cv.circle(frame, actual, radius=1, color=(255,0,0), thickness=5)
+            cv.circle(frame, estimated, radius=1, color=(0,0,255), thickness=5)
+            cv.circle(frame, estimated, radius=radius, color=(0,0,255), thickness=3)
+            cv.imshow("server", frame)
+            cv.waitKey(1)
+
+
+    async def register_on_callbacks(self):
+        '''
+            Define event callback functions here
+        '''
+        channel = self.channel
         @channel.on("message")
         def on_message(message):
             '''
-                TODO: create docstring and put server side printing here
+                When a message comes over the datachannel, this function gets called
+                This function parses the message and then attempts to calculate
+                RMS Error and draw the received ball coordinates from the client.
             '''
             print(f'''
-                channel {channel.label} sent message:
-                {message}
-            ''')
+                    channel {self.channel.label} message:
+                    {message}
+                ''')
+            values = message.split('\t') # for returned estimated coordinates, server expects a string with format: "{x_pos}\t{y_pos}\t{timestamp}"
+            try:
+                ball_location_dict = self.stream_track.ball_location_dict
+                print(f'''
+                        actual ball location is {ball_location_dict[int(values[2])]}
+                ''')
+                # do something with the ball location value and then delete it from the dictionary
+                radius = self.stream_track.radius
+                resolution = self.stream_track.resolution
+                actual_loc = ball_location_dict[int(values[2])]
+                estimated_loc = (int(values[0]), int(values[1]))
+                self.show_error_frame(actual_loc, estimated_loc)
+                # TODO: write error to a file
+                error = self.calc_rms_error(actual_loc, estimated_loc)
+                print(f"RMSE: {error}")
+                del ball_location_dict[int(values[2])]
+            except Exception as e:
+                print(e)
+        
+        @self.pc.on("connectionstatechange")
+        async def on_connectionstatechange():
+            '''
+                Log details about connection state. if connection fails, just exit program
+            '''
+            print(f"connection state is {self.pc.connectionState}")
+            if self.pc.connectionState == "failed":
+                await self.pc.close()
+                exit(-1)
 
-    await signal.connect() # this doesn't do anything, but examples use it so here it is. function is implemented as just a pass in aiortc.
-    pc.addTrack(stream_track)
-    await pc.setLocalDescription(await pc.createOffer())
-    print("sending offer")
-    await signal.send(pc.localDescription)
 
+    async def run(self):
+        '''
+            Event loop for running the server
+        '''
+        await self.register_on_callbacks()
+        await self.prepare_tcp_rtc_offer()
+        await self.send_offer()
+        print("offer received")
+        while await self.consume_signal():
+            print("signal consumed")
+            continue
+        await self.shutdown()
+        return True
     
+
+    async def shutdown(self):
+        '''
+            Method to shutdown server. TODO: implement
+        '''
+        pass
+        
 
 async def main():
     '''
-        TODO: write doc string
-        Entry point of script to start server and connect to clients
+        Entry point into server.py. Gets parameters to run script from command line arguments or environment variables.
+        Then it builds a BallVideoRTCServer and runs it.
     '''
-    velocity = 5
-    radius = 40
-    resolution = (1920, 1080)
-    host = 'localhost'
-    port = '50001'
-    # TODO: move variables above to command line interface or environment variables with defaults to fall back on
+    # get arguments
+    arg_parser = argparse.ArgumentParser(
+        prog='client.py',
+        description='This program connects to server.py in the same directory. It is a WebRTC client that recieves images of a bouncing ball and estimates its center'
+    )
 
-    signal = TcpSocketSignaling(host, port)
-    pc = aiortc.RTCPeerConnection()
-    await run_rtc_server(pc, signal, velocity, radius, resolution)
+    arg_parser.add_argument(
+        '-n', '--host',
+        action='store',
+        help = 'host Ip address',
+        nargs='?',
+        default=None
+    )
 
-if __name__ == "__main__":
-    loop = asyncio.get_event_loop()
-    loop.run_until_complete(main())
-    # asyncio.run(main())
+    arg_parser.add_argument(
+        '-p', '--port',
+        action='store',
+        help = 'host TCP port number for signaling',
+        nargs='?',
+        default=None
+    )
+
+    arg_parser.add_argument(
+        '-v', '--velocity',
+        action='store',
+        help = 'Velocity in pixels per frame that the ball moves at in both x and y directions',
+        nargs='?',
+        default=5,
+        type=int
+    )
+
+    arg_parser.add_argument(
+        '-r', '--radius',
+        action='store',
+        help = 'radius of the ball in the image being generated by the server',
+        nargs='?',
+        default=40,
+        type=int
+    )
+
+    arg_parser.add_argument(
+        '-rh', '--resolutionHeight',
+        action='store',
+        help = 'height of the frames generated in number of pixels',
+        nargs='?',
+        default=768,
+        type=int
+    )
+
+    arg_parser.add_argument(
+        '-rw', '--resolutionWidth',
+        action='store',
+        help = 'width of the frames generated in number of pixels',
+        nargs='?',
+        default=1024,
+        type=int
+    )
+
+    arg_parser.add_argument(
+        '-d', '--display', 
+        dest='display', 
+        action='store_true',
+        help = 'Select displaying of frames. Defaults to no if not set'
+    )
+    arg_parser.add_argument(
+        '-nd', '--no-display', 
+        dest='display', 
+        action='store_false',
+        help = 'Select no displaying of frames. Defaults to no if not set'
+    )
+    arg_parser.set_defaults(display=False)
+
+    args = arg_parser.parse_args()
+    
+    velocity = args.velocity
+    radius = args.radius
+    resolution = (args.resolutionWidth, args.resolutionHeight)
+    display = args.display
+    host = args.host
+    port = args.port
+
+    if host is None:
+        host = os.getenv('HOST_TO_LISTEN')
+    if port is None:
+        port = os.getenv('PORT_TO_LISTEN')
+    if host is None:
+        host = 'localhost'
+    if port is None:
+        port = '50051'
+    # TODO: move variables above to command line interface or environment variables with defaults to fall back on  
+    stream_track = BallVideoStreamTrack(velocity, radius, resolution)
+    server = BallVideoRTCServer(host, port, velocity, radius, resolution, display=display)
+    await server.run()
+
+if __name__ == '__main__':
+    asyncio.run(main())
+
