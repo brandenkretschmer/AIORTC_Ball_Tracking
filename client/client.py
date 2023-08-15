@@ -36,9 +36,16 @@ class POINT(ctypes.Structure):
         ("time_stamp", ctypes.c_int)
     ]
 
-def detect_center(frame: np.ndarray):
+def detect_center(frame: np.ndarray, dp: float = 6, minDist: float = 5) -> list[int, int]:
     '''
-        TODO: write doc string
+        This function estimates the center of a circle in an image using the Hough Transformation
+        input:
+            frame = ndarray in BGR24 format representing picture
+            dp = accumulator matrix scale factor
+            minDist = minimum distance between estimated circle centers
+        returns:
+            list[x,y] = (x_coord, y_coord)
+        Note: this function needs to be tuned
     '''
     # convert to grayscale
     gray_frame = cv.cvtColor(frame, cv.COLOR_BGR2GRAY)
@@ -48,26 +55,39 @@ def detect_center(frame: np.ndarray):
 
     # apply hough circle tranform to get the estimated center of the circle
     num_rows = gray_frame.shape[0]
-    circles = cv.HoughCircles(gray_frame, cv.HOUGH_GRADIENT, 5, 10)
-    return circles[0][0] # TODO: check if this indexing is correct
+    circles = cv.HoughCircles(gray_frame, cv.HOUGH_GRADIENT, dp=dp, minDist=minDist)
+    if circles is not None:
+        return circles[0][0] # TODO: check if this indexing is correct
 
-def detect_center_proc(que: multi.Queue, val: multi.Value, cond: multi.Value):
+def detect_center_proc(que: multi.Queue, val: multi.Value, cond: multi.Value, dp: float = 6, minDist: float = 5):
     '''
-        TODO: write doc string 
+        Coroutine to run detect_center function within a process.
+        Updates val with estimated center of circle in the frame that was popped from que during the same iteration
+
+        inputs:
+            que = used to pass frames and timestamps to process
+            val = used to pass image center coordinates and corresponding timestamp back to main thread
+            cond = condition for whether or not the main thread has dealt with the value in val. 0 nor no it hasn't
     '''
     try:
         while True:
             if que.qsize() > 0 and cond.value==0:
 
-                # with cond.get_lock():
-                frame, timestamp = que.get() # get bgr frame from the que
-                # print(timestamp)
-                circles = detect_center(frame)
-                # print(circles)
-                val.x = int(circles[0])
-                val.y = int(circles[1])
-                val.time_stamp = timestamp
-                cond.value = 1
+                with cond.get_lock():
+                    frame, timestamp = que.get() # get bgr frame from the que
+                    circles = detect_center(frame, dp, minDist)
+                    if circles is None:
+                        # if algorithm cant find center of circle, use last estimated position
+                        print(f"skipped frame at timestamp {timestamp}")
+                        val.time_stamp = timestamp
+                        cond.value = 1
+                        continue
+                    else:
+                        # print(circles)
+                        val.x = int(circles[0])
+                        val.y = int(circles[1])
+                        val.time_stamp = timestamp
+                        cond.value = 1
             else:
                 # print("empty")
                 pass
@@ -79,21 +99,17 @@ def detect_center_proc(que: multi.Queue, val: multi.Value, cond: multi.Value):
 # code for rtc client
 ########################################################################################################################
 
-def discard_asyncio_exceptions():
-    while True:
-        tasks = asyncio.all_tasks()
-        for task in tasks:
-            pass
-        asyncio.wait(0)
-
 class RTCClient():
     '''
-        TODO: write doc string
+        A client that consumes RTC content. Client consumes one MediaStreamTrack and one Datachannel 
     '''
     def __init__(self, host: str, port: str):
         '''
-            TODO: write doc string
-            This client only works with a single track coupled with a single datachannel
+            Initialize parameters for Client
+
+            inputs:
+                host = host IP address to connect to
+                port = host port number to connect to
         '''
         self.host = host
         self.port = port
@@ -102,10 +118,6 @@ class RTCClient():
         self.channel: aiortc.RTCDataChannel = None
         self.track: aiortc.MediaStreamTrack = None
 
-    async def connect(self):
-        '''
-            TODO: write doc
-        '''
 
     async def consume_signal(self) ->bool:
         '''
@@ -133,6 +145,7 @@ class RTCClient():
         
         return False
     
+
     async def register_on_callbacks(self):
         '''
             Register callbacks when an RTC event happens.
@@ -140,6 +153,7 @@ class RTCClient():
         '''
         raise NotImplementedError
     
+
     async def run(self):
         '''
             Method to run server.
@@ -147,6 +161,7 @@ class RTCClient():
         '''
         raise NotImplementedError
     
+
     async def shutdown(self):
         '''
             Method to shut down server
@@ -159,7 +174,7 @@ class BallVideoRTCClient(RTCClient):
     '''
         TODO: write Doc String
     '''
-    def __init__(self, host: str, port: str, display: bool = False):
+    def __init__(self, host: str, port: str, display: bool = False, dp: float= 6, minDist: float = 5):
         '''
             TODO write DOC String
         '''
@@ -167,7 +182,7 @@ class BallVideoRTCClient(RTCClient):
         self._m = multi.Manager()
         self._proc_que = self._m.Queue()
         self._proc_value = multi.Value(POINT, lock=False)   # don't need a lock because there's only 1 writer and 1 reader. read/writes are synced as well
-        self._proc_cond = multi.Value(ctypes.c_int, lock=False) # don't need a lock. 2 states (0,1). 1 writer and 1 reader for each state
+        self._proc_cond = multi.Value(ctypes.c_int, lock=True)
         self._proc_value.x = -1
         self._proc_value.y = -1
         self._proc_value.time_stamp = -1
@@ -175,10 +190,13 @@ class BallVideoRTCClient(RTCClient):
         self._frame_proc = multi.Process(target=detect_center_proc, args=(
             self._proc_que,
             self._proc_value,
-            self._proc_cond
+            self._proc_cond,
+            dp,
+            minDist
         ))
         self._frame_proc.start()
         self.display = display
+
 
     async def register_on_callbacks(self):
         '''
@@ -214,14 +232,16 @@ class BallVideoRTCClient(RTCClient):
             if self.pc.connectionState == "failed":
                 await self.pc.close()
                 exit(-1)
+
      
     def show_frame(self, ndarr_frame: np.ndarray):
         '''
-            print aframe in bgr format if self.display is set to True
+            print aframe in bgr format if self.display is set to True.
         '''
         if self.display:
             cv.imshow('client', ndarr_frame)
             cv.waitKey(1)
+
 
     async def _run_track(self) -> bool:
         '''
@@ -235,20 +255,22 @@ class BallVideoRTCClient(RTCClient):
             return False
         
         time_stamp = frame.pts
-        ndarr_frame = frame.to_ndarray(format = 'bgr24')
+        ndarr_frame = frame.to_ndarray()
+        ndarr_frame = cv.cvtColor(ndarr_frame, cv.COLOR_YUV2BGR_I420)
         self._proc_que.put((ndarr_frame, time_stamp))
         self.show_frame(ndarr_frame)
         
-        if self._proc_cond.value == 1:
-            # deal with processed frame aka send it over to server
-            # with self.__frame_proc_cond.get_lock():
-            # send server the estimated values of the center of circle with the timestamp for it as well
-            self.channel.send(f'{self._proc_value.x}\t{self._proc_value.y}\t{self._proc_value.time_stamp}')
-            self._proc_cond.value = 0
-        else:
-            # continue processing stream
-            pass
+        with self._proc_cond.get_lock():
+            if self._proc_cond.value == 1:
+                # deal with processed frame aka send it over to server
+                # send server the estimated values of the center of circle with the timestamp for it as well
+                self.channel.send(f'{self._proc_value.x}\t{self._proc_value.y}\t{self._proc_value.time_stamp}')
+                self._proc_cond.value = 0
+            else:
+                # continue processing stream
+                pass
         return True
+    
     
     async def run(self):
         '''
@@ -266,9 +288,11 @@ class BallVideoRTCClient(RTCClient):
         except Exception as e:
             print("Exception!!")
             print(e)
+            exit(-1)
 
         await self.shutdown()
     
+
     async def shutdown(self):
         '''
             Method to shut down server
@@ -276,11 +300,13 @@ class BallVideoRTCClient(RTCClient):
         '''
         self._frame_proc.kill()
     
+
     def __del__(self):
         self._frame_proc.kill()
         #self._proc_value.release()
         #self._proc_cond.release()
         # release queue
+
 
 async def main():
     '''
@@ -321,10 +347,31 @@ async def main():
         action='store_false',
         help = 'Select no displaying of frames. Defaults to no if not set'
     )
+
+    arg_parser.add_argument(
+        "--dp",
+        action='store',
+        help = 'Accumulator Matrix scale for detecting center of circle. Should leave at default value if using default resolution/radius/etc',
+        nargs='?',
+        default=6,
+        type=float
+    )
+
+    arg_parser.add_argument(
+        "--minDist",
+        action='store',
+        help = 'Minimum distance between centers for detecting center of circle. Should leave at default value if using default resolution/radius/etc',
+        nargs='?',
+        default=8,
+        type=float
+    )
     arg_parser.set_defaults(display=False)
 
     args = arg_parser.parse_args()
 
+    dp = args.dp
+    print(dp)
+    minDist = args.minDist
     host = args.host
     port = args.port
     display = args.display
@@ -340,12 +387,12 @@ async def main():
         port = '50051'
 
     # build client and run it
-    client = BallVideoRTCClient(host, port, display=display)
+    client = BallVideoRTCClient(host, port, display=display, dp=dp, minDist=minDist)
     await client.run()
+
 
 if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
         print("Key interrupt")
-

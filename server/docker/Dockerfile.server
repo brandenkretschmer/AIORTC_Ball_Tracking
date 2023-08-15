@@ -1,5 +1,6 @@
 # written by Branden Kretschmer for Nimble Robotics python coding challenge
 # email: brandenkretsch@gmail.com
+# Note file structure is important here. Don't move the files.
 
 FROM ubuntu:22.04
 
@@ -19,11 +20,13 @@ WORKDIR /project
 # install packages to python3.11
 RUN apt update && apt install python3-pip -y
 RUN apt update && apt install ffmpeg libsm6 libxext6 -y
+RUN apt update && apt upgrade ffmpeg -y
 COPY requirements.txt /project
 RUN python3.11 -m pip install --upgrade pip && python3.11 -m pip install -r requirements.txt
 
 # create project directory and copy file over
-COPY hello.py /project
+COPY server/server.py /project
 
 # run app
-ENTRYPOINT ["python3.11", "hello.py"]
+# ENTRYPOINT ["python3.11", "server.py"]
+CMD /bin/bash
