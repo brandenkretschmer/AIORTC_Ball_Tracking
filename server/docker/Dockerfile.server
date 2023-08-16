@@ -30,5 +30,6 @@ RUN python3.11 -m pip install --upgrade pip && python3.11 -m pip install -r requ
 COPY server/server.py /project
 
 # run app
-# ENTRYPOINT python3.11 server.py # for kubernetes, define port and listening IP in YAML Deployment file
-CMD ["/bin/bash", "-c", "exec /bin/bash -c 'trap : TERM INT; sleep 9999999999d & wait'"]
+# for kubernetes, define port and listening IP in YAML Deployment file as environment variables
+ENTRYPOINT ["python3.11", "server.py"]
+CMD []

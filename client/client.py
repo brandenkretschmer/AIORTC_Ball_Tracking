@@ -383,10 +383,13 @@ async def main():
     port = args.port
     display = args.display
     # if host or port weren't specified in command line, check environment variables
-    if host is None:
-        host = os.getenv('HOST_TO_CONNECT')
-    if port is None:
-        port = os.getenv('PORT_TO_CONNECT')
+    if host is None or port is None:
+        try:
+            service_name = os.getenv("SERVER_SERVICE_NAME")
+            host = os.getenv(f"{service_name}_SERVICE_HOST")
+            port = os.getenv(f"{service_name}_SERVICE_PORT")
+        except Exception as e:
+            print(e)
     # TODO: add environment variable lookups for script arguments like dp so that they can be changed in yaml deploytment file
     
     # if host or port still weren't specified, set default to local host and port 50051
@@ -394,7 +397,7 @@ async def main():
         host = 'localhost'
     if port is None:
         port = '50051'
-
+    print(f"connecting to: {host}:{port}")
     # build client and run it
     client = BallVideoRTCClient(host, port, display=display, dp=dp, minDist=minDist)
     await client.run()

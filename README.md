@@ -33,4 +33,5 @@ More unit tests for functions
 Better interface definitions for RTCClient and RTCServer classes (ex. have them inherit from an ABC)  
 Multiple connections to the server at once  
 Better logging instead of using print to log things. This would help with the k8s deployment  
-At higher resolutions, things crash due to latency in frame processing from both the client side and the server side.  The latency causes things to hang. Scaling frame rate inversely with resolution would solve this problem. So would using more processes/posix threads.
+At higher resolutions, things crash due to latency in frame processing from both the client side and the server side.  The latency causes things to hang. Scaling frame rate inversely with resolution would solve this problem. So would using more processes and/or posix threads.  
+Deployment files could be scaled up, but the server-signal-service would have to become a load balancer that only send 1 connection at a time to a server.  

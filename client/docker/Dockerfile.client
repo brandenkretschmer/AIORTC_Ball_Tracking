@@ -27,8 +27,10 @@ COPY requirements.txt /project
 RUN python3.11 -m pip install --upgrade pip && python3.11 -m pip install -r requirements.txt
 
 # create project directory and copy file over
-COPY server/server.py /project
+COPY client/client.py /project
 
 # run app
-# ENTRYPOINT ["python3.11", "client.py"]
-CMD ["/bin/bash", "-c", "exec /bin/bash -c 'trap : TERM INT; sleep 9999999999d & wait'"]
+ENTRYPOINT ["python3.11", "client.py"]
+# dp value was tuned for a bit to get a decent result from the Houghes Transformation algorithm
+CMD ["--dp", "5.845"]
+# CMD ["/bin/bash", "-c", "exec /bin/bash -c 'trap : TERM INT; sleep 9999999999d & wait'"]
