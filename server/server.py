@@ -22,47 +22,52 @@ import argparse
 
 class FrameGenerator():
     '''
-        TODO: write doc string
-        Class used to generate video of a ball bouncing across the screen
+        Class used to generate frames of a ball bouncing across the screen
     '''
     def __init__(self, velocity: int = 5, radius: int = 40, resolution: Tuple[int, int] = (640, 480)):
         '''
-            TODO: write doc string. Move comments about variables to here
             Initialize variables to start generating frames
+                resolution = resolution    # resolution of the frames (width, height)
+                velocity = velocity        # pixels per frame that ball will move in both x and y directions
+                radius = radius            # radius of ball that will be drawn
+                x_pos = self.radius        # current x position for center of ball
+                y_pos = self.radius        # current y position for center of ball
+                x_sense = 1                # direction of x velocity. Positive is to the right.
+                y_sense = 1                # direction of y velocity. Positive is down.
         '''
         self.resolution = resolution
-        self.velocity = velocity        # pixels per frame that ball will move in both x and y directions
-        self.radius = radius            # radius of ball that will be drawn
-        self.x_pos = self.radius        # current x position for center of ball
-        self.y_pos = self.radius        # current y position for center of ball
-        self.x_sense = 1                # direction of x velocity. Positive is to the right.
-        self.y_sense = 1                # direction of y velocity. Positive is down.
+        self.velocity = velocity       
+        self.radius = radius            
+        self.x_pos = self.radius       
+        self.y_pos = self.radius        
+        self.x_sense = 1               
+        self.y_sense = 1              
     
     def get_frame(self):
         '''
-            TODO: write doc string
             Generate the next frame
         '''
 
         # draw frame with ball in current position and add ball position to location queue
         start_time = time.time()
         frame = np.zeros((self.resolution[1], self.resolution[0], 3), dtype='uint8') # image will be in bgr representation
-        cv.circle(frame, (self.x_pos, self.y_pos), radius = self.radius, thickness = -1, color = (0, 255, 0)) # TODO: make color customizeable
+        cv.circle(frame, (self.x_pos, self.y_pos), radius = self.radius, thickness = -1, color = (0, 255, 0)) 
 
         return frame
     
     def get_current_location(self):
         '''
-            TODO: write doc string
+            Return stored center of the ball
         '''
         return (self.x_pos, self.y_pos)
     
     def increment_position(self):
         '''
-            TODO: write doc string
+            Increment the position of the ball by the velocity mulitplied by the sense.
+            If ball is out of bounds, reverse the sense and increment in the other direction
         '''
         # increment position
-        self.x_pos += self.velocity * self.x_sense  # TODO: add different velocities for x and y
+        self.x_pos += self.velocity * self.x_sense
         self.y_pos += self.velocity * self.y_sense
 
         # boundary check and move position in other direction if out of bounds
@@ -80,7 +85,8 @@ class BallVideoStreamTrack(aiortc.VideoStreamTrack):
     '''
     def __init__(self, velocity: int, radius: int, resolution: Tuple[int, int], ball_location_dict: dict = {}):
         '''
-            TODO: write doc string
+            Initialize variables needed for the stream track. This includes instatiating the grame generator and keeping
+            a dictionary for ball location.
         '''
         super().__init__()
         self.velocity = velocity
@@ -92,7 +98,7 @@ class BallVideoStreamTrack(aiortc.VideoStreamTrack):
 
     async def recv(self):
         '''
-            TODO: write doc string
+            Generate and return the next frame in the stream
         '''
         pts, time_base = await self.next_timestamp()
         x_pos, y_pos = self.frame_gen.get_current_location()
@@ -254,7 +260,6 @@ class BallVideoRTCServer(RTCServer):
                 actual_loc = ball_location_dict[int(values[2])]
                 estimated_loc = (int(values[0]), int(values[1]))
                 self.show_error_frame(actual_loc, estimated_loc)
-                # TODO: write error to a file
                 error = self.calc_rms_error(actual_loc, estimated_loc)
                 print(f"time stamp {values[2]}:\n\tactual location: "
                       f"{actual_loc}\n\testimated location: {estimated_loc}\n\tRMSE: {error}")
@@ -290,7 +295,8 @@ class BallVideoRTCServer(RTCServer):
 
     async def shutdown(self):
         '''
-            Method to shutdown server. TODO: implement
+            Method to shutdown server
+            Attempts to close all connections
         '''
         await self.signal.close()
         try:
@@ -396,7 +402,6 @@ async def main():
         host = 'localhost'
     if port is None:
         port = '50051'
-    # TODO: move variables above to command line interface or environment variables with defaults to fall back on  
 
     # Server can only have one connection at a time, but the while loop spins up a new server if a disconnection happens
     while True:

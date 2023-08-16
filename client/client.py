@@ -36,7 +36,7 @@ class POINT(ctypes.Structure):
         ("time_stamp", ctypes.c_int)
     ]
 
-def detect_center(frame: np.ndarray, dp: float = 6, minDist: float = 5) -> list[int, int]:
+def detect_center(frame: np.ndarray, dp: float = 6, minDist: float = 5) -> list[int, int, int]:
     '''
         This function estimates the center of a circle in an image using the Hough Transformation
         input:
@@ -44,7 +44,7 @@ def detect_center(frame: np.ndarray, dp: float = 6, minDist: float = 5) -> list[
             dp = accumulator matrix scale factor
             minDist = minimum distance between estimated circle centers
         returns:
-            list[x,y] = (x_coord, y_coord)
+            list[x,y, r] = (x_coord, y_coord, radius)
         Note: this function needs to be tuned
     '''
     # convert to grayscale
@@ -57,12 +57,37 @@ def detect_center(frame: np.ndarray, dp: float = 6, minDist: float = 5) -> list[
     num_rows = gray_frame.shape[0]
     circles = cv.HoughCircles(gray_frame, cv.HOUGH_GRADIENT, dp=dp, minDist=minDist)
     if circles is not None:
-        return circles[0][0] # TODO: check if this indexing is correct
+        return circles[0][0]
+    return None
+
+
+def update_center_values(que: multi.Queue, val: multi.Value, cond: multi.Value, dp: float = 6, minDist: float = 5):
+    '''
+        This should only be called in detect_center_proc. This was pulled out of the process loop
+        in order to write a unit test for it.
+        updates values when appropriate
+    '''
+    if que.qsize() > 0 and cond.value==0:
+        with cond.get_lock():
+            frame, timestamp = que.get() # get bgr frame from the que
+            circles = detect_center(frame, dp, minDist)
+            if circles is None:
+                # if algorithm cant find center of circle, use last estimated position
+                print(f"skipped frame at timestamp {timestamp}")
+                val.time_stamp = timestamp
+                cond.value = 1
+            else:
+                # print(circles)
+                val.x = int(circles[0])
+                val.y = int(circles[1])
+                val.time_stamp = timestamp
+                cond.value = 1
 
 def detect_center_proc(que: multi.Queue, val: multi.Value, cond: multi.Value, dp: float = 6, minDist: float = 5):
     '''
         Coroutine to run detect_center function within a process.
-        Updates val with estimated center of circle in the frame that was popped from que during the same iteration
+        Updates val with estimated center of circle in the frame that was popped from que during the same iteration.
+        Waits until main thread has dealt with val to pop another frome from que and start analyzing it 
 
         inputs:
             que = used to pass frames and timestamps to process
@@ -71,26 +96,7 @@ def detect_center_proc(que: multi.Queue, val: multi.Value, cond: multi.Value, dp
     '''
     try:
         while True:
-            if que.qsize() > 0 and cond.value==0:
-
-                with cond.get_lock():
-                    frame, timestamp = que.get() # get bgr frame from the que
-                    circles = detect_center(frame, dp, minDist)
-                    if circles is None:
-                        # if algorithm cant find center of circle, use last estimated position
-                        print(f"skipped frame at timestamp {timestamp}")
-                        val.time_stamp = timestamp
-                        cond.value = 1
-                        continue
-                    else:
-                        # print(circles)
-                        val.x = int(circles[0])
-                        val.y = int(circles[1])
-                        val.time_stamp = timestamp
-                        cond.value = 1
-            else:
-                # print("empty")
-                pass
+            update_center_values(que, val, cond, dp, minDist)
     except Exception as e:
         return
 
@@ -130,11 +136,13 @@ class RTCClient():
         '''
         obj = None
         while True:
+            # wait for a connection to the server. If the server is not running, 
+            # receive will result in an exception, so keep eating the
             try:
                 obj = await self.signal.receive()
                 break
-            except Exception as e:
-                print(e)
+            except (FileNotFoundError, OSError):
+                pass
 
         if isinstance(obj, aiortc.RTCSessionDescription):
             await self.pc.setRemoteDescription(obj)
@@ -179,11 +187,15 @@ class RTCClient():
 
 class BallVideoRTCClient(RTCClient):
     '''
-        TODO: write Doc String
+        An RTCClient meant to consume a BallVideoStreamTrack (defined in server), process the frame, and
+        eventually send back an estimated center of the ball from the consumed frame.
     '''
     def __init__(self, host: str, port: str, display: bool = False, dp: float= 6, minDist: float = 5):
         '''
-            TODO write DOC String
+            Initializes values needed and also starts _frame_proc process for analyzing frames.
+           _proc_value.x represents the extimated x coordinate of the circle from the last analyzed frame
+           _proc_value.y is the same as x but for the y coordinate
+           _proc_que is used to send frames _frame_proc 
         '''
         super().__init__(host, port)
         self._m = multi.Manager()
@@ -282,37 +294,33 @@ class BallVideoRTCClient(RTCClient):
     async def run(self):
         '''
             Method to run server.
-            This should be implemented in a subclass
+            
+            Registers callbacks, then calls consume signal. Once WebRTC has done its thing and there's a peer 
+            to peer connection, the track being served starts to get consumed and keeps getting consumed.
+            When consumption stops due to connection ending, call shutdown and end the client process
         '''
 
         await self.register_on_callbacks()
-        try:
-            while await self.consume_signal():
-                print("still consuming")
-                if self.track is not None:
-                    while await self._run_track():
-                        continue
-        except Exception as e:
-            print("Exception!!")
-            print(e)
-            exit(-1)
-
+        while await self.consume_signal():
+            print("still consuming")
+            if self.track is not None:
+                while await self._run_track():
+                    pass
         await self.shutdown()
     
 
     async def shutdown(self):
         '''
-            Method to shut down server
-            This should be implemented in a subclass
+            Method to shut down client. Makes sure frame analysis process is killed
         '''
         self._frame_proc.kill()
     
 
     def __del__(self):
+        '''
+            make sure frame analysis process gets killed when destructor is called
+        '''
         self._frame_proc.kill()
-        #self._proc_value.release()
-        #self._proc_cond.release()
-        # release queue
 
 
 async def main():
@@ -383,6 +391,7 @@ async def main():
     port = args.port
     display = args.display
     # if host or port weren't specified in command line, check environment variables
+    # The following block of code gets a service IP and Port to contact the server when running in Kubernetes
     if host is None or port is None:
         try:
             service_name = os.getenv("SERVER_SERVICE_NAME")
@@ -390,7 +399,6 @@ async def main():
             port = os.getenv(f"{service_name}_SERVICE_PORT")
         except Exception as e:
             print(e)
-    # TODO: add environment variable lookups for script arguments like dp so that they can be changed in yaml deploytment file
     
     # if host or port still weren't specified, set default to local host and port 50051
     if host is None:
@@ -404,6 +412,7 @@ async def main():
 
 
 if __name__ == "__main__":
+    # run client in an event loop
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
